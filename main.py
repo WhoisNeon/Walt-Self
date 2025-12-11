@@ -37,7 +37,7 @@ MESSAGES = {
     ),
     "set_usage": "**💡 • Usage:** `.set 30m` or `.set 2h`",
     "set_reply_needed": "**‼️ • Reply to a message to set as banner!**",
-    "set_min_interval": f"**❌ • Minimum interval: {min_minutes} minute!**",
+    "set_min_interval": f"**❌ • Minimum interval: {MIN_MINUTES} minute!**",
     "set_success": (
         "**Banner Activated ✅**\n\n"
         "**💬 • Chat:** {chat_title}\n"
