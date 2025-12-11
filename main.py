@@ -3,6 +3,7 @@ import asyncio
 import re
 import json
 import signal
+import jdatetime
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from telethon import TelegramClient, events, functions
@@ -28,40 +29,33 @@ ALLOWED_USERS = [
 
 MIN_MINUTES = 1
 SESSION_NAME = "walt_self"
-TIMEZONE = ZoneInfo("Asia/Tehran")  # Tehran timezone (UTC+3:30)
 
 # ================== MESSAGES (fully customizable) ==================
 MESSAGES = {
-    "auto_reply": (
-        "**سلام عزیز! 👋**\n\n"
-        "در حال حاضر آفلاینم.\n\n"
-        "به محض آنلاین شدن، جوابت رو می‌دم! ✨"
-    ),
     "set_usage": "**💡 • Usage:** `.set 30m` or `.set 2h`",
     "set_reply_needed": "**‼️ • Reply to a message to set as banner!**",
-    "set_min_interval": f"**❌ • Minimum interval: {MIN_MINUTES} minute!**",
+    "set_min_interval": f"**❌ • Minimum interval: {MIN_MINUTES} minute(s)!**",
     "set_success": (
         "**Banner Activated ✅**\n\n"
-        "**💬 • Chat:** {chat_title}\n"
-        "**🔁 • Interval:** Every {mins} minute{plural}\n"
-        "**🔜 • Next Send:** {next_time}"
+        "**💬 • Group:** {chat_title}\n"
+        "**🔁 • Interval:** Every {mins}\n"
+        "**🔜 • Next Send:** {next_time}\n\n"
+        "💡 • Stop → use .stop"
     ),
-    "stop_success": "**Banner Stopped 🚫**\n\n**💬 • Chat:** {chat_title}",
-    "stop_nothing": "**❌ • No active banner in this chat!**",
+    "stop_success": "**Banner Stopped 🚫**\n\n**💬 • Group:** {chat_title}",
+    "stop_nothing": "**❌ • No active banner in this group!**",
     "stopall_private": "**🗑️ • All banners stopped globally!**\n\n🔢 • Total stopped: **{count}** banner{plural}",
-    "stopall_one": "**🚫 • Banner stopped in this chat only.**\n\n💡 • Use `.stopall` in Saved Messages to stop everything.",
+    "stopall_one": "**🚫 • Banner stopped in this group only.**\n\n💡 • Use `.stopall` in Saved Messages to stop everything.",
     "stoppall_nothing": "**❌ • No active banners to stop!**",
     "list_empty": "**❌ • No active banners right now.**",
-    "list_title": "**Active Banners List 📃**\n",
-    "list_item": "{i}. **{title}**\n   Interval: Every {mins} min\n   Next: {next_run}",
-    "list_tip": "\n💡 • Stop one → use `.stop` in that chat\nStop all → `.stopall` in Saved Messages",
+    "list_title": "**Active Banners List 📃**\n\n",
+    "list_item": "{i}. **{title}**\n   Interval: Every {mins}\n   Next: {next_run}\n\n",
+    "list_tip": "• Stop one → use `.stop` in that group\n• Stop all → `.stopall` in Saved Messages",
     "ping_success": "**⚡ • Ping:** `{ping}ms`",
     "ping_error": "**❌ • Ping failed!**",
-    "date_title": "**🕐 • Date & Time Info**\n\n",
-    "date_tehran": "**🇮🇷 • Tehran Time:** `{tehran_time}`\n**🗓️ • Date:** `{persian_date}`\n",
-    "date_utc": "**🌍 • UTC Time:** `{utc_time}`\n**📅 • Date:** `{utc_date}`\n",
-    "date_server": "**🖥️ • Server Time:** `{server_time}`\n**📅 • Date:** `{server_date}`\n",
-    "date_extra": "\n**ℹ️ • Server timezone: {server_tz}"
+    "date_tehran": "**🇮🇷 • Tehran:**\n • Time: `{tehran_time}`\n • Date: `{persian_date}`\n\n",
+    "date_london": "**🇬🇧 • London:**\n • Time: `{london_time}`\n • Date: `{london_date}`\n\n",
+    "date_california": "**🇺🇸 • California:**\n • Time: `{california_time}`\n • Date: `{california_date}`",
 }
 
 # ================== GLOBALS ==================
@@ -74,27 +68,28 @@ signal.signal(signal.SIGINT, lambda s, f: stop_event.set())
 if os.name != "nt":
     signal.signal(signal.SIGTERM, lambda s, f: stop_event.set())
 
-# ================== TIMEZONE HELPER FUNCTIONS ==================
+# ================== HELPER FUNCTIONS ==================
 def get_tehran_time():
-    """Get current time in Tehran timezone"""
-    return datetime.now(TIMEZONE)
+    return datetime.now(ZoneInfo("Asia/Tehran"))
 
-def get_server_time():
-    """Get current server time (naive or aware)"""
-    return datetime.now()
+def get_london_time():
+    return datetime.now(ZoneInfo("Europe/London"))
+
+def get_california_time():
+    return datetime.now(ZoneInfo("America/Los_Angeles"))
 
 def format_persian_date(dt):
-    """Simple Persian date formatting"""
-    return dt.strftime("%Y/%m/%d")
+    jalali = jdatetime.datetime.fromgregorian(datetime=dt)
+    return jalali.strftime("%Y/%m/%d")
 
-# Add this small safe function
-def get_server_timezone_name():
-    """Safely get server timezone name"""
-    try:
-        tz = datetime.now().astimezone().tzinfo
-        return tz.tzname(None) if tz else "UTC"
-    except:
-        return "UTC"
+def format_interval(minutes: int) -> str:
+    if minutes >= 60:
+        hours = minutes // 60
+        mins = minutes % 60
+        if mins == 0:
+            return f"{hours} hour{'s' if hours != 1 else ''}"
+        return f"{hours}h {mins}m"
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
 
 # ================== PERSISTENCE ==================
 def load():
@@ -103,20 +98,15 @@ def load():
             with open("banner_schedules.json") as f:
                 data = json.load(f)
                 for k, v in data.items():
-                    # Convert stored times to Tehran timezone
                     stored_next_run = datetime.fromisoformat(v["next_run"])
-                    tehran_next_run = stored_next_run.replace(tzinfo=TIMEZONE)
-                    schedules[int(k)] = {
-                        **v,
-                        "next_run": tehran_next_run
-                    }
+                    tehran_next_run = stored_next_run.replace(tzinfo=ZoneInfo("Asia/Tehran"))
+                    schedules[int(k)] = {**v, "next_run": tehran_next_run}
             print(f"Loaded {len(schedules)} active banner(s)")
         except Exception as e:
             print(f"Load error: {e}")
 
 def save():
     try:
-        # Store times in Tehran timezone for consistency
         data_to_save = {
             str(k): {**v, "next_run": v["next_run"].isoformat()}
             for k, v in schedules.items()
@@ -134,7 +124,6 @@ async def banner_scheduler():
             if info["next_run"] <= now_tehran:
                 try:
                     await client.forward_messages(chat_id, info["msg_id"], info["from_chat"])
-                    # Schedule next run in Tehran time
                     info["next_run"] = now_tehran + timedelta(minutes=info["minutes"])
                     save()
                     print(f"Banner sent → {info['chat_title']} | Next: {info['next_run'].strftime('%H:%M:%S')} Tehran")
@@ -162,7 +151,6 @@ async def save_self_destruct(message):
 
         await asyncio.sleep(2.0 + (message.id % 25) / 10)
 
-        # Detect file type & attributes
         attributes = []
         force_document = True
         ext = ".file"
@@ -201,7 +189,7 @@ async def save_self_destruct(message):
 
         filename = f"selfdestruct_{get_tehran_time():%Y%m%d_%H%M%S}{ext}"
 
-        caption = message.message or "**Saved Self-Destruct Media ✅**"
+        caption = message.message or "**Saved Self-Destruct Media**"
         full_caption = f"""
 {caption}
 
@@ -210,7 +198,7 @@ async def save_self_destruct(message):
 🆔 • **User ID:** `{user_id}`
 💬 • **Chat:** {chat_title}
 📅 • **Saved At (Tehran):** {get_tehran_time():%Y-%m-%d %H:%M:%S}
-        """.strip()
+""".strip()
 
         file = await client.upload_file(file_bytes, file_name=filename)
 
@@ -233,7 +221,7 @@ async def commands(event):
     text = (event.message.message or "").strip().lower()
     me = await client.get_me()
 
-    # Security check
+    # Security: only allowed users can use commands
     if ALLOWED_USERS and event.sender_id not in ALLOWED_USERS:
         return
 
@@ -242,6 +230,8 @@ async def commands(event):
     if text.startswith(".set"):
         if not event.is_reply:
             await event.edit(MESSAGES["set_reply_needed"])
+            await asyncio.sleep(5)
+            await event.delete()
             return
 
         replied = await event.get_reply_message()
@@ -249,17 +239,28 @@ async def commands(event):
             interval = text.split("set", 1)[1].strip()
         except IndexError:
             await event.edit(MESSAGES["set_usage"])
+            await asyncio.sleep(5)
+            await event.delete()
             return
 
+        # Parse interval like 30m, 2h, 1h30m, etc.
         mins = sum(int(n) * (60 if u == "h" else 1) for n, u in re.findall(r"(\d+)\s*(h|m)", interval + "m"))
         if mins < MIN_MINUTES:
             await event.edit(MESSAGES["set_min_interval"])
+            await asyncio.sleep(5)
+            await event.delete()
             return
 
-        chat = await event.get_input_chat()
-        chat_title = getattr(chat, "title", None) or "Saved Messages"
+        entity = await client.get_entity(chat_id)
+        if hasattr(entity, "title") and entity.title:
+            chat_title = entity.title
+        elif event.is_private and chat_id == me.id:
+            chat_title = "Saved Messages"
+        elif hasattr(entity, "first_name"):
+            chat_title = f"{entity.first_name or ''} {entity.last_name or ''}".strip() or "Deleted Account"
+        else:
+            chat_title = "Unknown Chat"
 
-        # Use Tehran timezone for scheduling
         now_tehran = get_tehran_time()
         schedules[chat_id] = {
             "from_chat": replied.chat_id,
@@ -270,15 +271,17 @@ async def commands(event):
         }
         save()
 
-        plural = "" if mins == 1 else "s"
         next_time = schedules[chat_id]["next_run"].strftime("%H:%M:%S")
-
         await event.edit(MESSAGES["set_success"].format(
-            chat_title=chat_title, mins=mins, plural=plural, next_time=next_time
+            chat_title=chat_title,
+            mins=format_interval(mins),
+            next_time=next_time
         ))
+        await asyncio.sleep(6)
+        await event.delete()
 
     elif text in (".stop", ".stopall"):
-        is_saved = event.is_private and event.chat_id == me.id
+        is_saved = event.is_private and chat_id == me.id
 
         if text == ".stopall" and is_saved:
             if schedules:
@@ -289,6 +292,8 @@ async def commands(event):
                 await event.edit(MESSAGES["stopall_private"].format(count=count, plural=plural))
             else:
                 await event.edit(MESSAGES["stoppall_nothing"])
+            await asyncio.sleep(5)
+            await event.delete()
             return
 
         if chat_id in schedules:
@@ -296,15 +301,18 @@ async def commands(event):
             del schedules[chat_id]
             save()
             await event.edit(
-                MESSAGES["stopall_one"] if text == ".stopall" else
-                MESSAGES["stop_success"].format(chat_title=title)
+                MESSAGES["stopall_one"] if text == ".stopall" else MESSAGES["stop_success"].format(chat_title=title)
             )
         else:
             await event.edit(MESSAGES["stop_nothing"])
+        await asyncio.sleep(5)
+        await event.delete()
 
     elif text == ".list":
         if not schedules:
             await event.edit(MESSAGES["list_empty"])
+            await asyncio.sleep(5)
+            await event.delete()
             return
 
         lines = [MESSAGES["list_title"]]
@@ -316,75 +324,55 @@ async def commands(event):
                 time_str = f"{mins_left}m left"
             else:
                 time_str = "Overdue!"
-                
             lines.append(MESSAGES["list_item"].format(
                 i=i,
                 title=info["chat_title"],
-                mins=info["minutes"],
+                mins=format_interval(info["minutes"]),
                 next_run=f"{info['next_run'].strftime('%H:%M:%S')} ({time_str})"
             ))
-        await event.edit("".join(lines) + MESSAGES["list_tip"])
+        lines.append(MESSAGES["list_tip"])
+        await event.edit("".join(lines))
+        await asyncio.sleep(20)
+        await event.delete()
 
-    elif text == ".date" or text == ".time":
-        try:
-            tehran_now = get_tehran_time()
-            utc_now = datetime.now(ZoneInfo("UTC"))
-            server_now = get_server_time()
+    elif text in (".date", ".time"):
+        tehran_now = get_tehran_time()
+        london_now = get_london_time()
+        cali_now = get_california_time()
 
-            date_msg = MESSAGES["date_title"]
-            date_msg += MESSAGES["date_tehran"].format(
-                tehran_time=tehran_now.strftime("%H:%M:%S"),
-                persian_date=format_persian_date(tehran_now)
-            )
-            date_msg += MESSAGES["date_utc"].format(
-                utc_time=utc_now.strftime("%H:%M:%S"),
-                utc_date=utc_now.strftime("%Y/%m/%d")
-            )
-            date_msg += MESSAGES["date_server"].format(
-                server_time=server_now.strftime("%H:%M:%S"),
-                server_date=server_now.strftime("%Y/%m/%d")
-            )
-            date_msg += MESSAGES["date_extra"].format(
-                server_tz=get_server_timezone_name()
-            )
+        msg = MESSAGES["date_tehran"].format(
+            tehran_time=tehran_now.strftime("%H:%M:%S"),
+            persian_date=format_persian_date(tehran_now)
+        ) + MESSAGES["date_london"].format(
+            london_time=london_now.strftime("%H:%M:%S"),
+            london_date=london_now.strftime("%Y/%m/%d")
+        ) + MESSAGES["date_california"].format(
+            california_time=cali_now.strftime("%H:%M:%S"),
+            california_date=cali_now.strftime("%Y/%m/%d")
+        )
 
-            await event.edit(date_msg)
-            
-        except Exception as e:
-            print(f"Date command error: {e}")
-            await event.edit("**❌ • Date command failed!**")
+        await event.edit(msg)
+        await asyncio.sleep(15)
+        await event.delete()
 
-    elif text == ".ping":
-        try:
-            start = datetime.now()
-            await event.edit("**🏓 • Pinging...**")
-            end = datetime.now()
-            ping = int((end - start).total_seconds() * 1000)
-            
-            # Show ping with Tehran timestamp
-            tehran_time = get_tehran_time().strftime("%H:%M:%S")
-            await event.edit(f"{MESSAGES['ping_success'].format(ping=ping)}\n**⏰ Tehran:** {tehran_time}")
-        except Exception as e:
-            print(f"❌ • Ping command error: {e}")
-            await event.edit(MESSAGES["ping_error"]) 
+    elif text in (".ping", ".test", ".self"):
+        start = datetime.now()
+        await event.edit("**Pinging...**")
+        end = datetime.now()
+        ping = int((end - start).total_seconds() * 1000)
+        await event.edit(MESSAGES["ping_success"].format(ping=ping))
+        await asyncio.sleep(5)
+        await event.delete()
 
-# ================== AUTO FEATURES ==================
+# ================== SELF-DESTRUCT SAVER ==================
 @client.on(events.NewMessage(incoming=True))
 async def auto_self_destruct(event):
     if getattr(event.message.media, "ttl_seconds", None):
         asyncio.create_task(save_self_destruct(event.message))
 
-@client.on(events.NewMessage(incoming=True))
-async def auto_reply(event):
-    if event.is_private and event.sender_id != (await client.get_me()).id:
-        me = await client.get_me()
-        if not isinstance(me.status, (UserStatusOnline, UserStatusRecently)):
-            await event.reply(MESSAGES["auto_reply"])
-
 # ================== MAIN ==================
 async def main():
-    print("• Starting Walt Self-Bot (by @Nymaaa)...")
-    print(f"• Server Timezone: {get_server_time().tzinfo}")
+    print("• Starting Walt Self-Bot...")
     await client.start(phone=PHONE)
     me = await client.get_me()
     print(f"Logged in as {me.first_name} (@{me.username or 'no username'})")
