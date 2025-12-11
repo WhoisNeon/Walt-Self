@@ -4,7 +4,7 @@ import re
 import json
 import signal
 from datetime import datetime, timedelta
-
+from zoneinfo import ZoneInfo
 from telethon import TelegramClient, events, functions
 from telethon.tl.types import (
     UserStatusOnline,
@@ -28,6 +28,8 @@ ALLOWED_USERS = [
 
 MIN_MINUTES = 1
 SESSION_NAME = "walt_self"
+TIMEZONE = ZoneInfo("Asia/Tehran")  # Tehran timezone (UTC+3:30)
+
 # ================== MESSAGES (fully customizable) ==================
 MESSAGES = {
     "auto_reply": (
@@ -51,8 +53,15 @@ MESSAGES = {
     "stoppall_nothing": "**❌ • No active banners to stop!**",
     "list_empty": "**❌ • No active banners right now.**",
     "list_title": "**Active Banners List 📃**\n",
-    "list_item": "{i}. **{title}**\n   Interval: Every {mins} min\n   Next: {next_run}\n",
-    "list_tip": "\n💡 • Stop one → use `.stop` in that chat\nStop all → `.stopall` in Saved Messages"
+    "list_item": "{i}. **{title}**\n   Interval: Every {mins} min\n   Next: {next_run}",
+    "list_tip": "\n💡 • Stop one → use `.stop` in that chat\nStop all → `.stopall` in Saved Messages",
+    "ping_success": "**⚡ • Ping:** `{ping}ms`",
+    "ping_error": "**❌ • Ping failed!**",
+    "date_title": "**🕐 • Date & Time Info**\n\n",
+    "date_tehran": "**🇮🇷 • Tehran Time:** `{tehran_time}`\n**🗓️ • Date:** `{persian_date}`\n",
+    "date_utc": "**🌍 • UTC Time:** `{utc_time}`\n**📅 • Date:** `{utc_date}`\n",
+    "date_server": "**🖥️ • Server Time:** `{server_time}`\n**📅 • Date:** `{server_date}`\n",
+    "date_extra": "\n**ℹ️ • Server timezone: {server_tz}"
 }
 
 # ================== GLOBALS ==================
@@ -65,6 +74,28 @@ signal.signal(signal.SIGINT, lambda s, f: stop_event.set())
 if os.name != "nt":
     signal.signal(signal.SIGTERM, lambda s, f: stop_event.set())
 
+# ================== TIMEZONE HELPER FUNCTIONS ==================
+def get_tehran_time():
+    """Get current time in Tehran timezone"""
+    return datetime.now(TIMEZONE)
+
+def get_server_time():
+    """Get current server time (naive or aware)"""
+    return datetime.now()
+
+def format_persian_date(dt):
+    """Simple Persian date formatting"""
+    return dt.strftime("%Y/%m/%d")
+
+# Add this small safe function
+def get_server_timezone_name():
+    """Safely get server timezone name"""
+    try:
+        tz = datetime.now().astimezone().tzinfo
+        return tz.tzname(None) if tz else "UTC"
+    except:
+        return "UTC"
+
 # ================== PERSISTENCE ==================
 def load():
     if os.path.exists("banner_schedules.json"):
@@ -72,9 +103,12 @@ def load():
             with open("banner_schedules.json") as f:
                 data = json.load(f)
                 for k, v in data.items():
+                    # Convert stored times to Tehran timezone
+                    stored_next_run = datetime.fromisoformat(v["next_run"])
+                    tehran_next_run = stored_next_run.replace(tzinfo=TIMEZONE)
                     schedules[int(k)] = {
                         **v,
-                        "next_run": datetime.fromisoformat(v["next_run"])
+                        "next_run": tehran_next_run
                     }
             print(f"Loaded {len(schedules)} active banner(s)")
         except Exception as e:
@@ -82,30 +116,33 @@ def load():
 
 def save():
     try:
+        # Store times in Tehran timezone for consistency
+        data_to_save = {
+            str(k): {**v, "next_run": v["next_run"].isoformat()}
+            for k, v in schedules.items()
+        }
         with open("banner_schedules.json", "w") as f:
-            json.dump({
-                str(k): {**v, "next_run": v["next_run"].isoformat()}
-                for k, v in schedules.items()
-            }, f, indent=2)
+            json.dump(data_to_save, f, indent=2)
     except Exception as e:
         print(f"Save error: {e}")
 
 # ================== BANNER SCHEDULER ==================
 async def banner_scheduler():
     while not stop_event.is_set():
-        now = datetime.now()
+        now_tehran = get_tehran_time()
         for chat_id, info in list(schedules.items()):
-            if info["next_run"] <= now:
+            if info["next_run"] <= now_tehran:
                 try:
                     await client.forward_messages(chat_id, info["msg_id"], info["from_chat"])
-                    info["next_run"] = now + timedelta(minutes=info["minutes"])
+                    # Schedule next run in Tehran time
+                    info["next_run"] = now_tehran + timedelta(minutes=info["minutes"])
                     save()
-                    print(f"Banner sent → {info['chat_title']} | Next: {info['next_run'].strftime('%H:%M')}")
+                    print(f"Banner sent → {info['chat_title']} | Next: {info['next_run'].strftime('%H:%M:%S')} Tehran")
                 except Exception as e:
                     print(f"Banner failed (chat {chat_id}): {e}")
         await asyncio.sleep(15)
 
-# ================== SELF-DESTRUCT MEDIA SAVER (FULL) ==================
+# ================== SELF-DESTRUCT MEDIA SAVER ==================
 async def save_self_destruct(message):
     if not getattr(message.media, "ttl_seconds", None):
         return
@@ -162,7 +199,7 @@ async def save_self_destruct(message):
                 ext = ".jpg"
                 force_document = False
 
-        filename = f"selfdestruct_{datetime.now():%Y%m%d_%H%M%S}{ext}"
+        filename = f"selfdestruct_{get_tehran_time():%Y%m%d_%H%M%S}{ext}"
 
         caption = message.message or "**Saved Self-Destruct Media ✅**"
         full_caption = f"""
@@ -172,7 +209,7 @@ async def save_self_destruct(message):
 👤 • **Username:** {username}
 🆔 • **User ID:** `{user_id}`
 💬 • **Chat:** {chat_title}
-📅 • **Saved At:** {datetime.now():%Y-%m-%d %H:%M:%S}
+📅 • **Saved At (Tehran):** {get_tehran_time():%Y-%m-%d %H:%M:%S}
         """.strip()
 
         file = await client.upload_file(file_bytes, file_name=filename)
@@ -222,11 +259,13 @@ async def commands(event):
         chat = await event.get_input_chat()
         chat_title = getattr(chat, "title", None) or "Saved Messages"
 
+        # Use Tehran timezone for scheduling
+        now_tehran = get_tehran_time()
         schedules[chat_id] = {
             "from_chat": replied.chat_id,
             "msg_id": replied.id,
             "minutes": mins,
-            "next_run": datetime.now() + timedelta(minutes=mins),
+            "next_run": now_tehran + timedelta(minutes=mins),
             "chat_title": chat_title
         }
         save()
@@ -241,7 +280,6 @@ async def commands(event):
     elif text in (".stop", ".stopall"):
         is_saved = event.is_private and event.chat_id == me.id
 
-        # Global stop from Saved Messages
         if text == ".stopall" and is_saved:
             if schedules:
                 count = len(schedules)
@@ -253,7 +291,6 @@ async def commands(event):
                 await event.edit(MESSAGES["stoppall_nothing"])
             return
 
-        # Local stop
         if chat_id in schedules:
             title = schedules[chat_id]["chat_title"]
             del schedules[chat_id]
@@ -271,14 +308,65 @@ async def commands(event):
             return
 
         lines = [MESSAGES["list_title"]]
+        now_tehran = get_tehran_time()
         for i, (cid, info) in enumerate(schedules.items(), 1):
+            time_left = info["next_run"] - now_tehran
+            if time_left.total_seconds() > 0:
+                mins_left = int(time_left.total_seconds() / 60)
+                time_str = f"{mins_left}m left"
+            else:
+                time_str = "Overdue!"
+                
             lines.append(MESSAGES["list_item"].format(
                 i=i,
                 title=info["chat_title"],
                 mins=info["minutes"],
-                next_run=info["next_run"].strftime("%H:%M:%S")
+                next_run=f"{info['next_run'].strftime('%H:%M:%S')} ({time_str})"
             ))
         await event.edit("".join(lines) + MESSAGES["list_tip"])
+
+    elif text == ".date" or text == ".time":
+        try:
+            tehran_now = get_tehran_time()
+            utc_now = datetime.now(ZoneInfo("UTC"))
+            server_now = get_server_time()
+
+            date_msg = MESSAGES["date_title"]
+            date_msg += MESSAGES["date_tehran"].format(
+                tehran_time=tehran_now.strftime("%H:%M:%S"),
+                persian_date=format_persian_date(tehran_now)
+            )
+            date_msg += MESSAGES["date_utc"].format(
+                utc_time=utc_now.strftime("%H:%M:%S"),
+                utc_date=utc_now.strftime("%Y/%m/%d")
+            )
+            date_msg += MESSAGES["date_server"].format(
+                server_time=server_now.strftime("%H:%M:%S"),
+                server_date=server_now.strftime("%Y/%m/%d")
+            )
+            date_msg += MESSAGES["date_extra"].format(
+                server_tz=get_server_timezone_name()
+            )
+
+            await event.edit(date_msg)
+            
+        except Exception as e:
+            print(f"Date command error: {e}")
+            await event.edit("**❌ • Date command failed!**")
+
+    elif text == ".ping":
+        try:
+            start = datetime.now()
+            await event.edit("**🏓 • Pinging...**")
+            end = datetime.now()
+            ping = int((end - start).total_seconds() * 1000)
+            
+            # Show ping with Tehran timestamp
+            tehran_time = get_tehran_time().strftime("%H:%M:%S")
+            await event.edit(f"{MESSAGES['ping_success'].format(ping=ping)}\n**⏰ Tehran:** {tehran_time}")
+        except Exception as e:
+            print(f"❌ • Ping command error: {e}")
+            await event.edit(MESSAGES["ping_error"]) 
 
 # ================== AUTO FEATURES ==================
 @client.on(events.NewMessage(incoming=True))
@@ -296,6 +384,7 @@ async def auto_reply(event):
 # ================== MAIN ==================
 async def main():
     print("• Starting Walt Self-Bot (by @Nymaaa)...")
+    print(f"• Server Timezone: {get_server_time().tzinfo}")
     await client.start(phone=PHONE)
     me = await client.get_me()
     print(f"Logged in as {me.first_name} (@{me.username or 'no username'})")
