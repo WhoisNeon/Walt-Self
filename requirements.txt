@@ -1,1 +1,7 @@
 telethon
+Flask
+qrcode
+jdatetime
+requests
+moviepy
+imageio
